@@ -2,23 +2,39 @@
 """
 RSE3204 Wireless Localisation - MASTER (Pi A)
 =============================================
-Run this on Pi A.
-It:
-  1. Scans for the target Bluetooth device and measures dXA via RSSI
-     (using a Kalman Filter to reduce noise)
-  2. Asks the operator to enter dAB (Pi A → Pi B baseline distance)
-  3. Sends a GET_DISTANCE request to Slave (Pi B) over UART
-  4. Receives dXB from Pi B over UART
-  5. Computes θAB using the Law of Cosines
-  6. Prints a formatted summary table
+PURPOSE:
+    This script runs on Raspberry Pi A (the "master" node) and orchestrates
+    a wireless distance-and-angle measurement using two Pis and one BLE beacon.
 
-Usage:
-    sudo python3 master.py
+SYSTEM OVERVIEW:
+    Three points form a triangle:
+      - Pi A (master)  — this device, measures dXA (distance to beacon)
+      - Pi B (slave)   — runs slave.py, measures dXB (distance to beacon)
+      - Device X       — BLE beacon whose angular position we want to estimate
 
-Requirements:
+    The master collects all three side lengths of the triangle:
+      dXA — measured locally via BLE RSSI
+      dAB — entered manually by the operator (physical tape measure)
+      dXB — requested from the slave over UART
+
+    With all three sides known, the Law of Cosines gives the angle at
+    vertex X (theta_AB), which describes the beacon's angular position
+    relative to the two Pi nodes.
+
+EXECUTION FLOW:
+    1. Scan for the BLE beacon and measure dXA (same pipeline as slave:
+       collect RSSI samples -> remove outliers -> Kalman filter -> path loss).
+    2. Prompt the operator to enter dAB (Pi A to Pi B baseline distance).
+    3. Open UART, send GET_DISTANCE to slave, receive dXB.
+    4. Validate the triangle inequality, compute the angle.
+    5. Print a formatted results table.
+
+DEPENDENCIES:
     pip install pyserial
-    sudo apt-get install python3-pip libglib2.0-dev
-    (bluepy installed from source - see project README)
+    bluepy (BLE library, requires libglib2.0-dev, must run as root)
+
+USAGE:
+    sudo python3 master.py
 """
 
 import serial
@@ -26,50 +42,67 @@ import json
 import math
 from bluepy.btle import Scanner, DefaultDelegate
 
-# -- UART Configuration -------------------------------------------------------
+# --- UART Configuration ---
+# /dev/serial0 is the default UART device on Raspberry Pi (GPIO 14/15).
+# Both master and slave must use the same baud rate.
 SERIAL_DEVICE  = "/dev/serial0"
 SERIAL_SPEED   = 9600
-SERIAL_WAIT    = None      # no timeout - wait as long as slave needs (100 samples takes a while)
+SERIAL_WAIT    = None   # No timeout — the master blocks indefinitely waiting
+                        # for the slave's response, because the slave's BLE scan
+                        # (100 samples) can take over a minute.
 
-# -- Bluetooth Configuration --------------------------------------------------
-BEACON_ADDR      = "46:8C:00:00:FE:4D"  # your beacon MAC address
-SIGNAL_REF       = -63                   # RSSI at 1 metre (calibrate for your device)
-ATTENUATION_EXP  = 2.0                  # Path loss exponent (2.0 = free space)
-SAMPLE_COUNT     = 100                   # Number of RSSI readings to collect
+# --- Bluetooth Configuration ---
+# BEACON_ADDR: MAC address of the target BLE beacon. Must match across all scripts.
+BEACON_ADDR      = "46:8C:00:00:FE:4D"
 
+# SIGNAL_REF: The RSSI value (in dBm) measured when the beacon is exactly
+# 1 metre away. Obtained by running calibrate.py. This is the anchor point
+# for the path loss distance formula. Note: master and slave may have
+# different SIGNAL_REF values if their Bluetooth radios have different
+# sensitivities — calibrate each Pi independently.
+SIGNAL_REF       = -63
 
-# -- Kalman Filter ------------------------------------------------------------
+# ATTENUATION_EXP: Path loss exponent for the environment.
+# 2.0 = ideal free space, 2.7–3.5 = typical indoor with walls/furniture.
+ATTENUATION_EXP  = 2.0
+
+# SAMPLE_COUNT: Number of RSSI readings to collect per measurement.
+SAMPLE_COUNT     = 100
+
 
 def smooth_signal(data_points: list) -> float:
     """
-    Apply a 1D Kalman Filter to a list of RSSI readings.
+    Applies a 1D Kalman filter to a sequence of RSSI readings and returns
+    the final filtered estimate.
 
-    Key variables:
-      prediction        : current best guess of the true RSSI
-      uncertainty       : how uncertain we are about our estimate
-      drift_noise       : how much the true RSSI might drift between readings
-                          (small = assume RSSI is stable)
-      sensor_noise      : how noisy/unreliable the sensor is
-                          (larger = trust new readings less)
+    The Kalman filter incrementally refines an estimate of the true RSSI by
+    balancing two sources of information:
+      - The previous estimate (prediction)
+      - The new sensor reading (measurement)
 
-    Each iteration:
-      1. Kalman Gain = uncertainty / (uncertainty + sensor_noise)
-         how much to trust the new reading vs current estimate
-      2. prediction = prediction + gain * (new_reading - prediction)
-         blend estimate toward new reading weighted by gain
-      3. uncertainty = (1 - gain) * uncertainty
-         shrinks as we become more confident
+    Parameters tuned for BLE RSSI:
+      - drift_noise  = 0.01 : Low, because the true RSSI shouldn't change
+                               much between consecutive 1-second scans if
+                               both devices are stationary.
+      - sensor_noise = 2.0  : Moderately high, reflecting the inherent
+                               jitter in BLE RSSI readings.
+
+    Algorithm per iteration:
+      1. Predict: uncertainty grows by drift_noise (models possible change).
+      2. Compute Kalman gain = uncertainty / (uncertainty + sensor_noise).
+         This is a value between 0 and 1. High gain = trust the new reading
+         more; low gain = trust the existing estimate more.
+      3. Update: blend the new reading into the estimate, weighted by gain.
+      4. Shrink uncertainty by factor (1 - gain), reflecting increased
+         confidence after incorporating the new data.
     """
-    prediction    = data_points[0]   # start with first reading
+    prediction    = data_points[0]
     uncertainty   = 1.0
-    drift_noise   = 0.01          # assume RSSI is fairly stable
-    sensor_noise  = 2.0           # RSSI is noisy, moderately high
+    drift_noise   = 0.01
+    sensor_noise  = 2.0
 
     for sample in data_points[1:]:
-        # Prediction step: uncertainty grows slightly each step
         uncertainty = uncertainty + drift_noise
-
-        # Update step
         weight     = uncertainty / (uncertainty + sensor_noise)
         prediction = prediction + weight * (sample - prediction)
         uncertainty = (1 - weight) * uncertainty
@@ -77,12 +110,15 @@ def smooth_signal(data_points: list) -> float:
     return prediction
 
 
-# -- Outlier Removal ----------------------------------------------------------
-
 def filter_anomalies(measurements: list) -> list:
     """
-    Remove RSSI readings that are more than 2 standard deviations
-    from the mean. This eliminates sudden spikes before Kalman Filter.
+    Removes RSSI readings that deviate more than 2 standard deviations
+    from the mean. This pre-processing step protects the Kalman filter
+    from extreme spikes caused by multipath interference, temporary
+    obstructions, or BLE advertising collisions.
+
+    Returns the original list if filtering would leave fewer than 2 samples,
+    to avoid breaking downstream calculations.
     """
     import statistics
     mean_val  = sum(measurements) / len(measurements)
@@ -91,12 +127,16 @@ def filter_anomalies(measurements: list) -> list:
     discarded = len(measurements) - len(filtered)
     if discarded > 0:
         print(f"  Removed {discarded} outliers from {len(measurements)} readings")
-    return filtered if len(filtered) > 1 else measurements   # fallback if too many removed
+    return filtered if len(filtered) > 1 else measurements
 
-
-# -- Bluetooth RSSI to Distance -----------------------------------------------
 
 class BleListener(DefaultDelegate):
+    """
+    Callback handler required by bluepy's Scanner. handleDiscovery() is
+    invoked for each BLE advertisement received during a scan window.
+    We leave it empty because we process results after the scan completes,
+    not during discovery.
+    """
     def __init__(self):
         DefaultDelegate.__init__(self)
 
@@ -106,21 +146,37 @@ class BleListener(DefaultDelegate):
 
 def signal_to_range(rssi_val: float) -> float:
     """
-    Convert RSSI (dBm) to estimated distance (metres) using the log-distance
-    path loss model:
+    Converts an RSSI value (dBm) to an estimated distance (metres) using
+    the log-distance path loss model:
 
-        distance = 10 ^ ((SIGNAL_REF - RSSI) / (10 * ATTENUATION_EXP))
+        distance = 10 ^ ((SIGNAL_REF - rssi_val) / (10 * ATTENUATION_EXP))
 
-    SIGNAL_REF     : RSSI measured at exactly 1 metre (calibrate this!)
-    ATTENUATION_EXP: environment constant - 2.0 free space, 2.7-3.5 indoors
+    Derivation:
+      The model states that RSSI decreases logarithmically with distance:
+        RSSI = SIGNAL_REF - 10 * n * log10(d)
+      Solving for d gives the formula above.
+
+    Accuracy depends heavily on correct SIGNAL_REF (from calibrate.py)
+    and an appropriate ATTENUATION_EXP for the environment.
     """
     return 10 ** ((SIGNAL_REF - rssi_val) / (10 * ATTENUATION_EXP))
 
 
 def scan_beacon_range(tag: str, total_samples: int = SAMPLE_COUNT) -> float:
     """
-    Scan for BEACON_ADDR, collect RSSI readings, apply Kalman Filter,
-    and return estimated distance in metres.
+    Performs the complete distance measurement pipeline:
+      1. Runs BLE scans in a loop, collecting one RSSI reading per scan
+         cycle from the target beacon (identified by BEACON_ADDR).
+         Each scan() call listens for 1 second. If the beacon isn't
+         detected in a cycle, that cycle is simply skipped.
+      2. Removes outlier readings via filter_anomalies().
+      3. Smooths the cleaned data with the Kalman filter.
+      4. Converts the smoothed RSSI to distance via the path loss model.
+
+    The 'tag' parameter is a label string (e.g. "dXA") used in log output
+    to identify which distance is being measured.
+
+    Returns the estimated distance in metres.
     """
     print(f"[Master] Scanning for Bluetooth device ({BEACON_ADDR}) to measure {tag}...")
     print(f"[Master] Collecting {total_samples} samples - keep devices still!")
@@ -143,10 +199,7 @@ def scan_beacon_range(tag: str, total_samples: int = SAMPLE_COUNT) -> float:
 
     print()
 
-    # Step 1: Remove outliers
-    cleaned_data = filter_anomalies(measurements)
-
-    # Step 2: Apply Kalman Filter on clean readings
+    cleaned_data  = filter_anomalies(measurements)
     smoothed_rssi = smooth_signal(cleaned_data)
     raw_mean      = sum(measurements) / len(measurements)
     range_est     = signal_to_range(smoothed_rssi)
@@ -157,10 +210,15 @@ def scan_beacon_range(tag: str, total_samples: int = SAMPLE_COUNT) -> float:
     return range_est
 
 
-# -- Manual distance input ----------------------------------------------------
-
 def request_measurement(tag: str) -> float:
-    """Prompt operator for a distance value (used for dAB baseline)."""
+    """
+    Prompts the operator to manually enter a distance value via the terminal.
+    Used to input dAB — the physical baseline distance between Pi A and Pi B,
+    which must be measured with a tape measure since it cannot be derived
+    from BLE signals between the two Pis.
+
+    Loops until a valid non-negative number is entered.
+    """
     while True:
         try:
             entered = float(input(f"[Master] Enter {tag} (metres): "))
@@ -172,10 +230,22 @@ def request_measurement(tag: str) -> float:
             print("  Invalid input. Please enter a number.")
 
 
-# -- UART communication -------------------------------------------------------
-
 def retrieve_range_from_peer(conn: serial.Serial) -> float:
-    """Send GET_DISTANCE request over UART and wait for dXB response."""
+    """
+    Sends a GET_DISTANCE command to the slave over UART and blocks until
+    the slave responds with its measured distance (dXB).
+
+    Protocol:
+      - Sends:    {"cmd": "GET_DISTANCE"}\n
+      - Expects:  {"dxb": <float>}\n       on success
+                  {"error": "<message>"}\n  on failure
+
+    The slave takes a long time to respond (~100+ seconds) because it
+    performs its own full BLE scan. The UART timeout is set to None
+    (infinite) on the master side to accommodate this.
+
+    Raises RuntimeError if the slave reports an error.
+    """
     payload = json.dumps({"cmd": "GET_DISTANCE"}) + "\n"
     print("[Master] Sending GET_DISTANCE request to slave over UART ...")
     conn.write(payload.encode())
@@ -194,15 +264,26 @@ def retrieve_range_from_peer(conn: serial.Serial) -> float:
     return peer_range
 
 
-# -- Geometry -----------------------------------------------------------------
-
 def calculate_bearing(dist_xa: float, dist_xb: float, dist_ab: float):
     """
-    Compute theta_AB (angle at vertex X) using the Law of Cosines:
+    Computes the angle at vertex X (the BLE beacon) in the triangle
+    formed by Pi A, Pi B, and Device X, using the Law of Cosines:
 
         cos(theta) = (dXA^2 + dXB^2 - dAB^2) / (2 * dXA * dXB)
 
-    Returns angle in degrees, or None if degenerate.
+    Where:
+      dXA = distance from Device X to Pi A (measured by master)
+      dXB = distance from Device X to Pi B (measured by slave)
+      dAB = distance from Pi A to Pi B     (entered by operator)
+
+    The angle theta_AB tells us how "spread apart" the two Pis appear
+    from the beacon's perspective.
+
+    The cos_val is clamped to [-1, 1] to handle floating-point rounding
+    errors that could make acos() fail (e.g. cos_val = 1.0000000002).
+
+    Returns the angle in degrees, or None if either distance is zero
+    (degenerate triangle).
     """
     if dist_xa == 0 or dist_xb == 0:
         return None
@@ -213,13 +294,21 @@ def calculate_bearing(dist_xa: float, dist_xb: float, dist_ab: float):
 
 
 def check_triangle_valid(dist_xa: float, dist_xb: float, dist_ab: float) -> bool:
-    """Triangle inequality check."""
+    """
+    Verifies that the three distances satisfy the triangle inequality:
+    the sum of any two sides must be greater than the third side.
+    If this fails, the distances are geometrically impossible (likely due
+    to RSSI measurement error) and the angle cannot be computed.
+    """
     return (dist_xa + dist_xb > dist_ab) and (dist_xa + dist_ab > dist_xb) and (dist_xb + dist_ab > dist_xa)
 
 
-# -- Display ------------------------------------------------------------------
-
 def display_summary(dist_xa: float, dist_xb: float, dist_ab: float, bearing):
+    """
+    Prints a formatted results table showing all three distances and the
+    computed angle, followed by an ASCII diagram of the triangle layout
+    to help the operator visualise the geometry.
+    """
     border = "=" * 46
     print(f"\n  +{border}+")
     print(f"  |{'RSE3204 - Localisation Results':^46}|")
@@ -246,25 +335,30 @@ def display_summary(dist_xa: float, dist_xb: float, dist_ab: float, bearing):
     print()
 
 
-# -- Main ---------------------------------------------------------------------
-
 def execute_master():
+    """
+    Main orchestration routine for the master node.
+
+    Sequence:
+      1. Measure dXA — BLE scan from this Pi to the beacon.
+      2. Get dAB    — operator types the physical Pi-to-Pi distance.
+      3. Get dXB    — send UART request to slave, wait for its BLE result.
+      4. Validate   — check triangle inequality before computing the angle.
+      5. Compute    — Law of Cosines gives theta_AB (angle at the beacon).
+      6. Display    — print summary table and ASCII triangle diagram.
+    """
     print("=" * 50)
     print("  RSE3204 Wireless Localisation - MASTER (Pi A)")
     print("=" * 50)
 
-    # Step 1: Measure dXA via Bluetooth RSSI with Kalman Filter
     dist_xa = scan_beacon_range("dXA")
 
-    # Step 2: Get baseline dAB from operator (tape measure)
     dist_ab = request_measurement("dAB  [Pi A -> Pi B baseline]")
 
-    # Step 3: Open UART and fetch dXB from slave
     print(f"\n[Master] Opening UART on {SERIAL_DEVICE} at {SERIAL_SPEED} baud ...")
     with serial.Serial(SERIAL_DEVICE, SERIAL_SPEED, timeout=SERIAL_WAIT) as conn:
         dist_xb = retrieve_range_from_peer(conn)
 
-    # Step 4: Validate triangle
     if not check_triangle_valid(dist_xa, dist_xb, dist_ab):
         print("\n  WARNING: Distances do not form a valid triangle.")
         print("     Angle cannot be computed. Check your measurements.\n")
@@ -272,7 +366,6 @@ def execute_master():
     else:
         bearing = calculate_bearing(dist_xa, dist_xb, dist_ab)
 
-    # Step 5: Display results
     display_summary(dist_xa, dist_xb, dist_ab, bearing)
 
 
