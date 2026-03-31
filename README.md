@@ -2,7 +2,7 @@
 
 This project contains three Python scripts used to estimate the position of a Bluetooth beacon with two Raspberry Pis:
 
-- `calibrate.py` measures the beacon RSSI at exactly 1 metre and recommends a `TX_POWER` value.
+- `calibrate.py` measures the beacon RSSI at exactly 1 metre and recommends a `SIGNAL_REF` value.
 - `master.py` runs on Pi A, measures its own distance to the beacon, requests Pi B's distance over UART, and computes the angle at the beacon.
 - `slave.py` runs on Pi B, waits for the master request, measures its own distance to the beacon, and sends that result back over UART.
 
@@ -22,11 +22,11 @@ Purpose:
 - Collects 100 RSSI samples from the target Bluetooth beacon.
 - Removes RSSI outliers.
 - Computes an average RSSI at 1 metre.
-- Prints a recommended `TX_POWER` value.
+- Prints a recommended `SIGNAL_REF` value.
 
 Why it matters:
 
-The distance estimate in both `master.py` and `slave.py` depends heavily on `TX_POWER`. If this value is wrong, the calculated distances will be wrong.
+The distance estimate in both `master.py` and `slave.py` depends heavily on `SIGNAL_REF`. If this value is wrong, the calculated distances will be wrong.
 
 How it works:
 
@@ -51,11 +51,11 @@ Expected output:
 
 - Raw average RSSI
 - Cleaned average RSSI
-- Recommended `TX_POWER`
+- Recommended `SIGNAL_REF`
 
 After calibration:
 
-Copy the recommended `TX_POWER` value into both `master.py` and `slave.py` so both devices use the same calibration.
+Copy the recommended `SIGNAL_REF` value into `master.py` and `slave.py`. Note that each Pi should ideally be calibrated independently, as different Bluetooth radios may have different sensitivities — the `SIGNAL_REF` values for Pi A and Pi B may therefore differ.
 
 ### `master.py`
 
@@ -188,7 +188,7 @@ Important settings:
 
 1. Place the beacon exactly 1 metre from a Raspberry Pi.
 2. Run `calibrate.py`.
-3. Copy the recommended `TX_POWER` into both `master.py` and `slave.py`.
+3. Copy the recommended `SIGNAL_REF` into `master.py` and `slave.py`. Calibrate each Pi separately if their Bluetooth radios differ.
 4. Set the same `BEACON_ADDR` in all three files.
 5. Connect Pi A and Pi B over UART.
 6. Start `slave.py` on Pi B.
@@ -207,7 +207,7 @@ System packages mentioned in the scripts:
 
 ```bash
 sudo apt-get install python3-pip libglib2.0-dev
-pip install pyserial
+pip3 install pyserial bluepy
 ```
 
 `bluepy` is expected to be installed separately as described in your course or project setup.
@@ -215,7 +215,7 @@ pip install pyserial
 ## Configuration notes
 
 - Keep `BEACON_ADDR` identical in all scripts.
-- Keep `SIGNAL_REF` identical in `master.py` and `slave.py` after calibration.
+- Each Pi should be calibrated independently using `calibrate.py`. The `SIGNAL_REF` values in `master.py` and `slave.py` may differ if the two Pis have different Bluetooth radio sensitivities.
 - `ATTENUATION_EXP = 2.0` assumes near free-space conditions. Indoors, a higher value may be more realistic.
 - Each script currently uses `SAMPLE_COUNT = 100`, so scans may take some time.
 - `master.py` waits indefinitely for the slave response because its UART timeout is set to `None`.
