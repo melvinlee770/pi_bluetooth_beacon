@@ -63,9 +63,10 @@ def filter_anomalies(measurements: list) -> list:
     Returns the original list as a fallback if filtering would leave fewer
     than 2 samples (avoids division-by-zero downstream).
     """
-    mean_val  = sum(measurements) / len(measurements)
+    ## calculate mean and standard deviation
+    mean_val  = sum(measurements) / len(measurements)  
     std_dev   = statistics.stdev(measurements)
-    filtered  = [r for r in measurements if abs(r - mean_val) < 1 * std_dev]
+    filtered  = [r for r in measurements if abs(r - mean_val) < 1 * std_dev] 
     discarded = len(measurements) - len(filtered)
     if discarded > 0:
         print(f"  Removed {discarded} outliers from {len(measurements)} readings")
@@ -113,6 +114,7 @@ def execute_calibration():
 
     print("\n")
 
+    ## second calculation pass: compute mean 
     raw_mean = sum(measurements) / len(measurements)
     print(f"Raw simple average     = {raw_mean:.2f} dBm")
 

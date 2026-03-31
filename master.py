@@ -17,17 +17,12 @@ SYSTEM OVERVIEW:
       dAB — entered manually by the operator (physical tape measure)
       dXB — requested from the slave over UART
 
-    With all three sides known, the Law of Cosines gives the angle at
-    vertex X (theta_AB), which describes the beacon's angular position
-    relative to the two Pi nodes.
-
 EXECUTION FLOW:
     1. Scan for the BLE beacon and measure dXA (same pipeline as slave:
        collect RSSI samples -> remove outliers -> Kalman filter -> path loss).
     2. Prompt the operator to enter dAB (Pi A to Pi B baseline distance).
     3. Open UART, send GET_DISTANCE to slave, receive dXB.
-    4. Validate the triangle inequality, compute the angle.
-    5. Print a formatted results table.
+    4. Print a formatted results table.
 
 DEPENDENCIES:
     pip install pyserial
@@ -56,15 +51,11 @@ SERIAL_WAIT    = None   # No timeout — the master blocks indefinitely waiting
 BEACON_ADDR      = "46:8C:00:00:FE:4D"
 
 # SIGNAL_REF: The RSSI value (in dBm) measured when the beacon is exactly
-# 1 metre away. Obtained by running calibrate.py. This is the anchor point
-# for the path loss distance formula. Note: master and slave may have
-# different SIGNAL_REF values if their Bluetooth radios have different
-# sensitivities — calibrate each Pi independently.
+# take note: another pi may get different value 
 SIGNAL_REF       = -63
 
 # ATTENUATION_EXP: Path loss exponent for the environment.
-# 2.0 = ideal free space, 2.7–3.5 = typical indoor with walls/furniture.
-ATTENUATION_EXP  = 2.0
+ATTENUATION_EXP  = 2.0 # do not change (tested)
 
 # SAMPLE_COUNT: Number of RSSI readings to collect per measurement.
 SAMPLE_COUNT     = 100
@@ -249,12 +240,12 @@ def retrieve_range_from_peer(conn: serial.Serial) -> float:
     payload = json.dumps({"cmd": "GET_DISTANCE"}) + "\n"
     print("[Master] Sending GET_DISTANCE request to slave over UART ...")
     conn.write(payload.encode())
-    conn.flush()
+    conn.flush() # send out the data
 
     print("[Master] Waiting for slave response (this may take a while - slave is scanning 100 samples)...")
     incoming = conn.readline()
 
-    reply = json.loads(incoming.decode().strip())
+    reply = json.loads(incoming.decode().strip()) # received then convert from bytes to dict
 
     if "error" in reply:
         raise RuntimeError(f"Slave returned error: {reply['error']}")
@@ -330,8 +321,8 @@ def display_summary(dist_xa: float, dist_xb: float, dist_ab: float, bearing):
     print("         |    \\")
     print("    device X----Pi B")
     print(f"        dXB={dist_xb:.2f}m")
-    if bearing is not None:
-        print(f"\n  Angle at device X = {bearing:.2f} degrees")
+    # if bearing is not None:
+    #     print(f"\n  Angle at device X = {bearing:.2f} degrees")
     print()
 
 
@@ -361,12 +352,12 @@ def execute_master():
 
     if not check_triangle_valid(dist_xa, dist_xb, dist_ab):
         print("\n  WARNING: Distances do not form a valid triangle.")
-        print("     Angle cannot be computed. Check your measurements.\n")
-        bearing = None
-    else:
-        bearing = calculate_bearing(dist_xa, dist_xb, dist_ab)
+        print(" Check your measurements.\n")
+        # bearing = None
+    # else:
+    #     bearing = calculate_bearing(dist_xa, dist_xb, dist_ab)
 
-    display_summary(dist_xa, dist_xb, dist_ab, bearing)
+    display_summary(dist_xa, dist_xb, dist_ab)
 
 
 if __name__ == "__main__":
