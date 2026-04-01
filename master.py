@@ -308,11 +308,11 @@ def display_summary(dist_xa: float, dist_xb: float, dist_ab: float, bearing):
     print(f"  |  {'dXB  (Pi B -> Bluetooth device)':<38} {dist_xb:>5.3f} m  |")
     print(f"  |  {'dAB  (Pi A -> Pi B baseline)':<38} {dist_ab:>5.3f} m  |")
     print(f"  +{border}+")
-    if bearing is not None:
-        print(f"  |  {'Angle at device X (theta_AB)':<38} {bearing:>5.2f} deg  |")
-    else:
-        print(f"  |  {'Angle at device X (theta_AB)':<38} {'N/A':>7}  |")
-    print(f"  +{border}+")
+    # if bearing is not None:
+    #     print(f"  |  {'Angle at device X (theta_AB)':<38} {bearing:>5.2f} deg  |")
+    # else:
+    #     print(f"  |  {'Angle at device X (theta_AB)':<38} {'N/A':>7}  |")
+    # print(f"  +{border}+")
 
     print("\n  Triangle layout (not to scale):\n")
     print("        Pi A")
