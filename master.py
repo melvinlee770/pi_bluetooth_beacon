@@ -198,7 +198,7 @@ def scan_beacon_range(tag: str, total_samples: int = SAMPLE_COUNT) -> float:
     print(f"[Master] Simple average RSSI  = {raw_mean:.2f} dBm")
     print(f"[Master] Kalman filtered RSSI = {smoothed_rssi:.2f} dBm")
     print(f"[Master] {tag} = {range_est:.3f} m")
-    return range_est
+    return range_est ## RAW rssi -> metres
 
 
 def request_measurement(tag: str) -> float:
