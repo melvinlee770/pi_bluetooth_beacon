@@ -335,8 +335,7 @@ def execute_master():
       2. Get dAB    — operator types the physical Pi-to-Pi distance.
       3. Get dXB    — send UART request to slave, wait for its BLE result.
       4. Validate   — check triangle inequality before computing the angle.
-      5. Compute    — Law of Cosines gives theta_AB (angle at the beacon).
-      6. Display    — print summary table and ASCII triangle diagram.
+      5. Display    — print summary table and ASCII triangle diagram.
     """
     print("=" * 50)
     print("  RSE3204 Wireless Localisation - MASTER (Pi A)")
